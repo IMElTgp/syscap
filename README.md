@@ -39,6 +39,7 @@ Each syscall event carries the current task's `cgroup_id`, and user space keeps 
 Generate the eBPF bindings and build the binary:
 
 ```bash
+# bash build.sh
 go generate ./...
 go build -o syscap .
 ```
