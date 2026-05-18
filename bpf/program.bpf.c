@@ -51,6 +51,13 @@ struct {
     __type(value, struct enter_state);  // struct enter_state (partially event) as value
 } inflight SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u64);
+} cgroup_id_map SEC(".maps");
+
 SEC("tracepoint/raw_syscalls/sys_enter")
 int capture_sys_enter(struct trace_event_raw_sys_enter *ctx)
 {
@@ -61,6 +68,12 @@ int capture_sys_enter(struct trace_event_raw_sys_enter *ctx)
     state.cgroup_id = bpf_get_current_cgroup_id();
     state.ts_ns_enter = bpf_ktime_get_ns();
     state.syscall_id = ctx->id;
+
+    __u32 key = 0;
+    __u64 *target_cgroup_id = bpf_map_lookup_elem(&cgroup_id_map, &key);
+    if (target_cgroup_id && *target_cgroup_id != state.cgroup_id) {
+        return 0;
+    }
 
     struct task_struct *task = bpf_get_current_task_btf();
     state.ppid = BPF_CORE_READ(task, real_parent, pid);

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -36,20 +37,73 @@ func init() {
 	initTable()
 }
 
-func run() error {
-	containerID := flag.String("container-id", "", "container identifier for locating a container")
-	flag.Parse()
+type Config struct {
+	ContainerID   string
+	TargetSyscall string
+}
 
-	if *containerID == "" {
-		return fmt.Errorf("Usage: ./syscap --container-id <containerID>")
+func parseArgs(args []string) (Config, error) {
+	var cfg Config
+	fs := flag.NewFlagSet("syscap", flag.ContinueOnError)
+
+	fs.StringVar(&cfg.ContainerID, "container-id", "", "target container ID")
+	fs.StringVar(&cfg.TargetSyscall, "target-syscall", "", "target syscall name")
+
+	if err := fs.Parse(args); err != nil {
+		return cfg, fmt.Errorf("failed to parse arguments: %w", err)
 	}
 
-	cgroupID, err := resolveCgroupID(*containerID)
+	if err := validateArgs(cfg, fs.Args()); err != nil {
+		return cfg, fmt.Errorf("including invalid arguments: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func validateArgs(cfg Config, rest []string) error {
+	if cfg.ContainerID == "" {
+		return fmt.Errorf("Usage: ./syscap --container-id <containerID> (--target-syscall <syscall name 1>,<syscall name 2>,...)")
+	}
+
+	if strings.ContainsAny(cfg.TargetSyscall, "\t\n\r") {
+		return fmt.Errorf("invalid --target-syscall %q: syscall name must not contain whitespace", cfg.TargetSyscall)
+	}
+
+	if len(rest) != 0 {
+		return fmt.Errorf("unexpected positional arguments: %v", rest)
+	}
+
+	return nil
+}
+
+func splitSupportedSyscallFilter(targetSyscalls string) (syscalls map[string]struct{}) {
+	syscalls = make(map[string]struct{})
+	parts := strings.Split(targetSyscalls, ",")
+	for _, syscall := range parts {
+		syscalls[syscall] = struct{}{}
+	}
+	return
+}
+
+func checkIfExistInMap(m map[string]struct{}, elem string) bool {
+	_, ok := m[elem]
+	return ok
+}
+
+func run() error {
+	cfg, err := parseArgs(os.Args[1:])
+	if err != nil {
+		return fmt.Errorf("failed to parse arguments: %w", err)
+	}
+	containerID, targetSyscall := cfg.ContainerID, cfg.TargetSyscall
+
+	cgroupID, err := resolveCgroupID(containerID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve cgroup ID: %w", err)
 	}
 
 	seenSyscalls := make(map[uint32]struct{})
+	syscalls := splitSupportedSyscallFilter(targetSyscall)
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("failed to remove mem lock: %w", err)
@@ -60,6 +114,10 @@ func run() error {
 		return fmt.Errorf("failed to load object: %w", err)
 	}
 	defer obj.Close()
+
+	if err := obj.CgroupIdMap.Update(uint32(0), cgroupID, ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("failed to ship parsed cgroup ID to the eBPF program: %w", err)
+	}
 
 	tpEnter, err := link.Tracepoint("raw_syscalls", "sys_enter", obj.programPrograms.CaptureSysEnter, nil)
 	if err != nil {
@@ -95,6 +153,7 @@ func run() error {
 		fmt.Println("Syscalls this container called during this term of obversation: ")
 		for syscallID := range seenSyscalls {
 			fmt.Print(syscallTable[int(syscallID)] + ", ")
+
 		}
 		fmt.Println()
 		rd.Close()
@@ -115,14 +174,12 @@ func run() error {
 			return fmt.Errorf("failed to decode record from ringbuf reader: %w", err)
 		}
 
-		if cgroupID != event.CgroupID {
-			continue
-		}
-
 		comm := unix.ByteSliceToString(event.Comm[:])
 		seenSyscalls[event.SyscallID] = struct{}{}
 
-		fmt.Printf("pid=%d tid=%d uid=%d ppid=%d syscall_id=%d ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s args=%v\n", event.Pid, event.Tid, event.Uid, event.Ppid, event.SyscallID, event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm, event.Args)
+		if targetSyscall == "" || checkIfExistInMap(syscalls, syscallTable[int(event.SyscallID)]) {
+			fmt.Printf("pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s args=%v\n", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm, event.Args)
+		}
 	}
 }
 
