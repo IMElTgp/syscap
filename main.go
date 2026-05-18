@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,14 +35,56 @@ func main() {
 }
 
 func init() {
+	// init syscallTable
 	initTable()
 }
 
+// --container-id and --target-syscall flags
 type Config struct {
 	ContainerID   string
 	TargetSyscall string
 }
 
+// performance statistics for each syscall
+type StaticticalRes struct {
+	CalledCount, FailedCount int
+	Delays                   []time.Duration
+	P50Delay, P99Delay       time.Duration
+}
+
+var syscallStatistics = make(map[uint32]StaticticalRes)
+
+// updateStatistics updates the performance statistics of certain syscall when an event arrives
+func updateStatistics(event Event) {
+	lastRecord := syscallStatistics[event.SyscallID]
+	lastRecord.CalledCount++
+	if event.Errno > 0 {
+		lastRecord.FailedCount++
+	}
+	lastRecord.Delays = append(lastRecord.Delays, time.Duration(event.TimeStampExit-event.TimeStampEnter))
+	syscallStatistics[event.SyscallID] = lastRecord
+}
+
+// summarizeOneSyscall calculates the overall performance (P50/P99 delay) of each syscall call
+func summarizeOneSyscall(syscallID uint32) {
+	record := syscallStatistics[syscallID]
+	sort.Slice(record.Delays, func(i, j int) bool {
+		return record.Delays[i] < record.Delays[j]
+	})
+	if len(record.Delays) > 0 {
+		// percent 50 delay
+		if len(record.Delays)%2 == 0 {
+			record.P50Delay = (record.Delays[len(record.Delays)/2-1] + record.Delays[len(record.Delays)/2]) / 2
+		} else {
+			record.P50Delay = record.Delays[len(record.Delays)/2]
+		}
+		// percent 99 delay
+		record.P99Delay = record.Delays[99*len(record.Delays)/100]
+	}
+	syscallStatistics[syscallID] = record
+}
+
+// parseArgs parses --container-id and --target-syscall flags
 func parseArgs(args []string) (Config, error) {
 	var cfg Config
 	fs := flag.NewFlagSet("syscap", flag.ContinueOnError)
@@ -60,6 +103,7 @@ func parseArgs(args []string) (Config, error) {
 	return cfg, nil
 }
 
+// validateArgs verifies whether an argument configuration is valid
 func validateArgs(cfg Config, rest []string) error {
 	if cfg.ContainerID == "" {
 		return fmt.Errorf("Usage: ./syscap --container-id <containerID> (--target-syscall <syscall name 1>,<syscall name 2>,...)")
@@ -76,6 +120,7 @@ func validateArgs(cfg Config, rest []string) error {
 	return nil
 }
 
+// splitSupportedSyscallFilter serves --target-syscall flag, supporting multiple-syscall filtering (separated by commas)
 func splitSupportedSyscallFilter(targetSyscalls string) (syscalls map[string]struct{}) {
 	syscalls = make(map[string]struct{})
 	parts := strings.Split(targetSyscalls, ",")
@@ -102,8 +147,10 @@ func run() error {
 		return fmt.Errorf("failed to resolve cgroup ID: %w", err)
 	}
 
+	// seenSyscalls records what syscalls occured in events
 	seenSyscalls := make(map[uint32]struct{})
-	syscalls := splitSupportedSyscallFilter(targetSyscall)
+	// targetSyscalls represents syscalls that is expected to be kept by filter
+	targetSyscalls := splitSupportedSyscallFilter(targetSyscall)
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("failed to remove mem lock: %w", err)
@@ -115,6 +162,7 @@ func run() error {
 	}
 	defer obj.Close()
 
+	// send parsed cgroup id to the eBPF side to avoid capturing irrelavant events
 	if err := obj.CgroupIdMap.Update(uint32(0), cgroupID, ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("failed to ship parsed cgroup ID to the eBPF program: %w", err)
 	}
@@ -143,6 +191,7 @@ func run() error {
 	}
 	defer rd.Close()
 
+	// exit elegantly with context
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -152,7 +201,16 @@ func run() error {
 		}
 		fmt.Println("Syscalls this container called during this term of obversation: ")
 		for syscallID := range seenSyscalls {
-			fmt.Print(syscallTable[int(syscallID)] + ", ")
+			if targetSyscall != "" && !checkIfExistInMap(targetSyscalls, syscallTable[int(syscallID)]) {
+				continue
+			}
+			summarizeOneSyscall(syscallID)
+			fmt.Println(syscallTable[int(syscallID)] + ": ")
+			fmt.Printf("    called: %d\n", syscallStatistics[syscallID].CalledCount)
+			fmt.Printf("    failed: %d\n", syscallStatistics[syscallID].FailedCount)
+			fmt.Printf("    Success Rate: %f\n", 1-float64(syscallStatistics[syscallID].FailedCount)/float64(syscallStatistics[syscallID].CalledCount))
+			fmt.Printf("    P50 delay: %d\n", syscallStatistics[syscallID].P50Delay)
+			fmt.Printf("    P99 delay: %d\n", syscallStatistics[syscallID].P99Delay)
 
 		}
 		fmt.Println()
@@ -176,13 +234,15 @@ func run() error {
 
 		comm := unix.ByteSliceToString(event.Comm[:])
 		seenSyscalls[event.SyscallID] = struct{}{}
+		updateStatistics(event)
 
-		if targetSyscall == "" || checkIfExistInMap(syscalls, syscallTable[int(event.SyscallID)]) {
+		if targetSyscall == "" || checkIfExistInMap(targetSyscalls, syscallTable[int(event.SyscallID)]) {
 			fmt.Printf("pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s args=%v\n", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm, event.Args)
 		}
 	}
 }
 
+// extractPID parses container's main process ID from containerID
 func extractPID(containerID string) (pid int, err error) {
 	if containerID == "" {
 		return -1, fmt.Errorf("container ID provided is empty, cannot extract container main process ID")
@@ -201,6 +261,7 @@ func extractPID(containerID string) (pid int, err error) {
 	return
 }
 
+// resolveCgroupPath resolves the container's cgroup path in the pseudo cgroup filesystem from containerID
 func resolveCgroupPath(containerID string) (string, error) {
 	pid, err := extractPID(containerID)
 	if err != nil {
@@ -223,6 +284,7 @@ func resolveCgroupPath(containerID string) (string, error) {
 	return strings.TrimSpace(filepath.Join("/sys/fs/cgroup", parts[2])), nil
 }
 
+// resolveCgroupID resolves cgroup ID from stating cgroup path
 func resolveCgroupID(containerID string) (uint64, error) {
 	// cgroup ID is just its inode
 	cgroupPath, err := resolveCgroupPath(containerID)
