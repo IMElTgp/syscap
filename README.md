@@ -1,30 +1,41 @@
 # syscap
 
-`syscap` is a small eBPF-based syscall observer for a target (Docker) container.
+`syscap` is a small eBPF-based syscall observer for a target Docker container.
 
-It attaches to `raw_syscalls/sys_enter` and `raw_syscalls/sys_exit`, correlates the two sides of a syscall with a per-thread in-flight map, and prints completed syscall events for the specified container during a capture window.
+It attaches to `raw_syscalls/sys_enter` and `raw_syscalls/sys_exit`, correlates the two sides of a syscall with a per-thread in-flight map, and records completed syscall events for one target container during a capture window.
 
-## What It Does
+## Current Features
 
 `syscap` currently implements:
 
-- Container-scoped syscall collection using the container's `cgroup_id`
+- Container-scoped syscall collection based on the target container's `cgroup_id`
+- eBPF-side filtering so unrelated host syscalls are dropped before they reach user space
 - `sys_enter` and `sys_exit` correlation by thread ID
-- Per-event output with:
+- Per-event recording with:
   - host `pid`, `tid`, `ppid`, `uid`
-  - syscall ID
+  - syscall ID and syscall name
   - enter and exit timestamps
   - syscall duration in nanoseconds
   - return value and derived `errno`
   - thread `comm`
-  - raw syscall arguments (`args[6]`)
-- A final summary of distinct syscalls observed during the capture session
+  - syscall arguments captured from `sys_enter`
+- Named argument output for supported syscalls instead of plain `args[6]`
+- Optional syscall-name filtering through `--target-syscall`
+- Per-syscall performance summary at shutdown:
+  - call count
+  - failure count
+  - success rate
+  - `P50` latency
+  - `P99` latency
+- Two output files:
+  - `running.log` for per-event records
+  - `performance.log` for end-of-run summary
 
 ## How Container Scoping Works
 
 The tool resolves the target container's init PID with `docker inspect`, reads that process's cgroup path from `/proc/<pid>/cgroup`, and uses the cgroup directory inode as the container's `cgroup_id`.
 
-Each syscall event carries the current task's `cgroup_id`, and user space keeps only events that match the target container.
+User space writes that `cgroup_id` into a BPF array map before the programs are attached. The `sys_enter` program compares the current task's `cgroup_id` with the configured target and ignores unmatched events early in the kernel.
 
 ## Requirements
 
@@ -39,27 +50,40 @@ Each syscall event carries the current task's `cgroup_id`, and user space keeps 
 Generate the eBPF bindings and build the binary:
 
 ```bash
-# bash build.sh
 go generate ./...
 go build -o syscap .
 ```
 
+You can also use the local build helper if you keep it in sync with the repo:
+
+```bash
+bash build.sh
+```
+
 ## Usage
 
-Run `syscap` with a container ID:
+Capture all observed syscalls for one container:
 
 ```bash
 sudo ./syscap --container-id <container-id>
+```
+
+Capture only selected syscall names:
+
+```bash
+sudo ./syscap --container-id <container-id> --target-syscall read,write,openat
 ```
 
 The program runs for up to 60 seconds by default, or until interrupted with `Ctrl+C`.
 
 ## Output
 
-Each printed line represents one completed syscall observed from the target container:
+During capture, `syscap` writes detailed per-event records into `running.log` and shows a live counter in the terminal.
+
+Example event record:
 
 ```text
-pid=208126 tid=208126 uid=0 ppid=207122 syscall_id=257 ts_ns_enter=17209363377129 ts_ns_exit=17209363385440 duration(ns)=8311 ret=3 comm=ls args=[4294967196 140653523757952 524288 0 524288 140653523757952]
+pid=208126 tid=208126 uid=0 ppid=207122 syscall=openat ts_ns_enter=17209363377129 ts_ns_exit=17209363385440 duration(ns)=8311 ret=3 comm=ls args=[dfd=4294967196, filename=140653523757952, flags=524288, mode=0]
 ```
 
 Field meanings:
@@ -68,17 +92,29 @@ Field meanings:
 - `tid`: host thread ID
 - `uid`: caller UID
 - `ppid`: host parent PID
-- `syscall_id`: raw syscall number
+- `syscall`: syscall name
 - `ts_ns_enter`: timestamp captured at `sys_enter`
 - `ts_ns_exit`: timestamp captured at `sys_exit`
 - `duration(ns)`: `ts_ns_exit - ts_ns_enter`
 - `ret`: syscall return value
 - `comm`: thread name
-- `args`: raw syscall argument slots as captured at `sys_enter`
+- `args`: syscall arguments rendered with argument names when available
 
-At shutdown, `syscap` also prints the distinct syscall names observed for the target container during the session.
+At shutdown, `syscap` prints and stores a per-syscall summary in `performance.log`.
+
+Example summary:
+
+```text
+openat:
+    called: 128
+    failed: 3
+    Success Rate: 0.976562
+    P50 delay: 5421
+    P99 delay: 34871
+```
 
 ## Notes
 
 - Syscall IDs and names in this project are based on the local `x86_64` syscall table.
-- `args[6]` are exposed as raw argument slots; their meaning depends on the syscall.
+- Argument names are generated from the local tracing metadata and are meant to improve readability, not to fully reconstruct pointed-to user memory.
+- Pointer-like arguments are still logged as raw numeric values.
