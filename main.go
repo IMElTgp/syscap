@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -200,22 +201,27 @@ func run() error {
 			fmt.Println("\nProgram terminated with Ctrl+C caught")
 		}
 		fmt.Println("Syscalls this container called during this term of obversation: ")
+		performanceFile, _ := os.OpenFile("performance.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		w := io.MultiWriter(os.Stdout, performanceFile)
 		for syscallID := range seenSyscalls {
 			if targetSyscall != "" && !checkIfExistInMap(targetSyscalls, syscallTable[int(syscallID)]) {
 				continue
 			}
 			summarizeOneSyscall(syscallID)
-			fmt.Println(syscallTable[int(syscallID)] + ": ")
-			fmt.Printf("    called: %d\n", syscallStatistics[syscallID].CalledCount)
-			fmt.Printf("    failed: %d\n", syscallStatistics[syscallID].FailedCount)
-			fmt.Printf("    Success Rate: %f\n", 1-float64(syscallStatistics[syscallID].FailedCount)/float64(syscallStatistics[syscallID].CalledCount))
-			fmt.Printf("    P50 delay: %d\n", syscallStatistics[syscallID].P50Delay)
-			fmt.Printf("    P99 delay: %d\n", syscallStatistics[syscallID].P99Delay)
+			fmt.Fprintln(w, syscallTable[int(syscallID)]+": ")
+			fmt.Fprintf(w, "    called: %d\n", syscallStatistics[syscallID].CalledCount)
+			fmt.Fprintf(w, "    failed: %d\n", syscallStatistics[syscallID].FailedCount)
+			fmt.Fprintf(w, "    Success Rate: %f\n", 1-float64(syscallStatistics[syscallID].FailedCount)/float64(syscallStatistics[syscallID].CalledCount))
+			fmt.Fprintf(w, "    P50 delay: %d\n", syscallStatistics[syscallID].P50Delay)
+			fmt.Fprintf(w, "    P99 delay: %d\n", syscallStatistics[syscallID].P99Delay)
 
 		}
 		fmt.Println()
+		fmt.Println("You may see detailed information about each syscall event caught in ./running.log and the final performance analysis in ./performance.log.")
 		rd.Close()
 	}()
+
+	eventsCaught := 0
 
 	for {
 		record, err := rd.Read()
@@ -236,8 +242,24 @@ func run() error {
 		seenSyscalls[event.SyscallID] = struct{}{}
 		updateStatistics(event)
 
+		recordFile, err := os.OpenFile("running.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return err
+		}
+		defer recordFile.Close()
+
 		if targetSyscall == "" || checkIfExistInMap(targetSyscalls, syscallTable[int(event.SyscallID)]) {
-			fmt.Printf("pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s args=%v\n", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm, event.Args)
+			eventsCaught++
+			fmt.Fprintf(recordFile, "pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s ", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm)
+			fmt.Fprintf(recordFile, "args=[")
+			for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
+				fmt.Fprintf(recordFile, "%s=%d", arg, event.Args[idx])
+				if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
+					fmt.Fprintf(recordFile, ", ")
+				}
+			}
+			fmt.Fprintln(recordFile, "]")
+			fmt.Printf("\rRaw syscall events caught: %d", eventsCaught)
 		}
 	}
 }
