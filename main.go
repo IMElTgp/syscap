@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -51,6 +52,18 @@ type StaticticalRes struct {
 	CalledCount, FailedCount int
 	Delays                   []time.Duration
 	P50Delay, P99Delay       time.Duration
+}
+
+type RunningLogMetadata struct {
+	Pid         uint32        `json:"pid"`
+	Uid         uint32        `json:"uid"`
+	Tid         uint32        `json:"tid"`
+	Ppid        uint32        `json:"parent_pid"`
+	SyscallName string        `json:"syscall_name"`
+	Duration    time.Duration `json:"time_duration"`
+	ReturnValue int64         `json:"return_val"`
+	Comm        string        `json:"command"`
+	Arguments   string        `json:"args"`
 }
 
 var syscallStatistics = make(map[uint32]StaticticalRes)
@@ -136,6 +149,43 @@ func checkIfExistInMap(m map[string]struct{}, elem string) bool {
 	return ok
 }
 
+func formatArgumentText(event Event) (format string) {
+	for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
+		format += fmt.Sprintf("%s=%d", arg, event.Args[idx])
+		if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
+			format += ", "
+		}
+	}
+
+	return
+}
+
+func recordLogMetadata(event Event, datas []RunningLogMetadata) []RunningLogMetadata {
+	datas = append(datas, RunningLogMetadata{
+		Pid:         event.Pid,
+		Tid:         event.Tid,
+		Uid:         event.Uid,
+		Ppid:        event.Ppid,
+		SyscallName: syscallTable[int(event.SyscallID)],
+		Duration:    time.Duration(event.TimeStampExit - event.TimeStampEnter),
+		ReturnValue: event.Ret,
+		Comm:        unix.ByteSliceToString(event.Comm[:]),
+		Arguments:   formatArgumentText(event),
+	})
+
+	return datas
+}
+
+func writeToJSONFile(file *os.File, datas []RunningLogMetadata) error {
+	b, err := json.MarshalIndent(datas, "", " ")
+	if err != nil {
+		return fmt.Errorf("failed to pack JSON text: %w", err)
+	}
+	w := bufio.NewWriter(file)
+	w.WriteString(string(b))
+	return w.Flush()
+}
+
 func run() error {
 	cfg, err := parseArgs(os.Args[1:])
 	if err != nil {
@@ -192,6 +242,14 @@ func run() error {
 	}
 	defer rd.Close()
 
+	eventsCaught := 0
+	datas := []RunningLogMetadata{}
+	recordFile, err := os.OpenFile("running.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer recordFile.Close()
+
 	// exit elegantly with context
 	go func() {
 		select {
@@ -200,8 +258,16 @@ func run() error {
 		case <-ctxSignal.Done():
 			fmt.Println("\nProgram terminated with Ctrl+C caught")
 		}
+		recordJSON, err := os.OpenFile("running.json", os.O_CREATE|os.O_APPEND|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return
+		}
+		defer recordJSON.Close()
+		if err := writeToJSONFile(recordJSON, datas); err != nil {
+			return
+		}
 		fmt.Println("Syscalls this container called during this term of obversation: ")
-		performanceFile, _ := os.OpenFile("performance.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		performanceFile, _ := os.OpenFile("performance.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		w := io.MultiWriter(os.Stdout, performanceFile)
 		for syscallID := range seenSyscalls {
 			if targetSyscall != "" && !checkIfExistInMap(targetSyscalls, syscallTable[int(syscallID)]) {
@@ -211,17 +277,15 @@ func run() error {
 			fmt.Fprintln(w, syscallTable[int(syscallID)]+": ")
 			fmt.Fprintf(w, "    called: %d\n", syscallStatistics[syscallID].CalledCount)
 			fmt.Fprintf(w, "    failed: %d\n", syscallStatistics[syscallID].FailedCount)
-			fmt.Fprintf(w, "    Success Rate: %f\n", 1-float64(syscallStatistics[syscallID].FailedCount)/float64(syscallStatistics[syscallID].CalledCount))
+			fmt.Fprintf(w, "    success rate: %f\n", 1-float64(syscallStatistics[syscallID].FailedCount)/float64(syscallStatistics[syscallID].CalledCount))
 			fmt.Fprintf(w, "    P50 delay: %d\n", syscallStatistics[syscallID].P50Delay)
 			fmt.Fprintf(w, "    P99 delay: %d\n", syscallStatistics[syscallID].P99Delay)
 
 		}
 		fmt.Println()
-		fmt.Println("You may see detailed information about each syscall event caught in ./running.log and the final performance analysis in ./performance.log.")
+		fmt.Println("You may see detailed information about each syscall event caught in ./running.log or ./running.json and the final performance analysis in ./performance.log.")
 		rd.Close()
 	}()
-
-	eventsCaught := 0
 
 	for {
 		record, err := rd.Read()
@@ -242,24 +306,19 @@ func run() error {
 		seenSyscalls[event.SyscallID] = struct{}{}
 		updateStatistics(event)
 
-		recordFile, err := os.OpenFile("running.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return err
-		}
-		defer recordFile.Close()
-
 		if targetSyscall == "" || checkIfExistInMap(targetSyscalls, syscallTable[int(event.SyscallID)]) {
 			eventsCaught++
 			fmt.Fprintf(recordFile, "pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s ", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm)
-			fmt.Fprintf(recordFile, "args=[")
+			fmt.Fprintf(recordFile, "args=(")
 			for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
 				fmt.Fprintf(recordFile, "%s=%d", arg, event.Args[idx])
 				if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
 					fmt.Fprintf(recordFile, ", ")
 				}
 			}
-			fmt.Fprintln(recordFile, "]")
+			fmt.Fprintln(recordFile, ")")
 			fmt.Printf("\rRaw syscall events caught: %d", eventsCaught)
+			datas = recordLogMetadata(event, datas)
 		}
 	}
 }
