@@ -19,17 +19,25 @@ func processSyscallNameToIDMapping() {
 		fmt.Println(err.Error())
 	}
 
+	f, err := os.OpenFile("syscallNameToID.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+	defer f.Close()
+
 	for i := range name {
-		f, err := os.OpenFile("syscallNameToID.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
 		var w = bufio.NewWriter(f)
 		if _, err := w.WriteString(id[i] + ":" + " " + "\"" + name[i] + "\"" + ",\n"); err != nil {
 			fmt.Println(err.Error())
 		}
 		w.Flush()
-		f.Close()
+	}
+
+	for i := range name {
+		// build a reversed table
+		var w = bufio.NewWriter(f)
+		w.WriteString("\"" + name[i] + "\": " + id[i] + ",\n")
+		w.Flush()
 	}
 }
 
