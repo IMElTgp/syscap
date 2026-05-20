@@ -270,9 +270,6 @@ func run() error {
 		performanceFile, _ := os.OpenFile("performance.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		w := io.MultiWriter(os.Stdout, performanceFile)
 		for syscallID := range seenSyscalls {
-			if targetSyscall != "" && !checkIfExistInMap(targetSyscalls, syscallTable[int(syscallID)]) {
-				continue
-			}
 			summarizeOneSyscall(syscallID)
 			fmt.Fprintln(w, syscallTable[int(syscallID)]+": ")
 			fmt.Fprintf(w, "    called: %d\n", syscallStatistics[syscallID].CalledCount)
@@ -302,24 +299,26 @@ func run() error {
 			return fmt.Errorf("failed to decode record from ringbuf reader: %w", err)
 		}
 
+		if targetSyscall != "" && !checkIfExistInMap(targetSyscalls, syscallTable[int(event.SyscallID)]) {
+			continue
+		}
+
 		comm := unix.ByteSliceToString(event.Comm[:])
 		seenSyscalls[event.SyscallID] = struct{}{}
 		updateStatistics(event)
 
-		if targetSyscall == "" || checkIfExistInMap(targetSyscalls, syscallTable[int(event.SyscallID)]) {
-			eventsCaught++
-			fmt.Fprintf(recordFile, "pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s ", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm)
-			fmt.Fprintf(recordFile, "args=(")
-			for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
-				fmt.Fprintf(recordFile, "%s=%d", arg, event.Args[idx])
-				if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
-					fmt.Fprintf(recordFile, ", ")
-				}
+		eventsCaught++
+		fmt.Fprintf(recordFile, "pid=%d tid=%d uid=%d ppid=%d syscall=%s ts_ns_enter=%d ts_ns_exit=%d duration(ns)=%d ret=%d comm=%s ", event.Pid, event.Tid, event.Uid, event.Ppid, syscallTable[int(event.SyscallID)], event.TimeStampEnter, event.TimeStampExit, event.TimeStampExit-event.TimeStampEnter, event.Ret, comm)
+		fmt.Fprintf(recordFile, "args=(")
+		for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
+			fmt.Fprintf(recordFile, "%s=%d", arg, event.Args[idx])
+			if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
+				fmt.Fprintf(recordFile, ", ")
 			}
-			fmt.Fprintln(recordFile, ")")
-			fmt.Printf("\rRaw syscall events caught: %d", eventsCaught)
-			datas = recordLogMetadata(event, datas)
 		}
+		fmt.Fprintln(recordFile, ")")
+		fmt.Printf("\rRaw syscall events caught: %d", eventsCaught)
+		datas = recordLogMetadata(event, datas)
 	}
 }
 

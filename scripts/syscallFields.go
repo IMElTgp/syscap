@@ -69,15 +69,6 @@ func getSyscallFields() error {
 		}
 		defer fd.Close()
 		w := bufio.NewWriter(fd)
-		/*
-			w.WriteString(fmt.Sprintf("%d: ", syscallID) + syscallName + "(")
-			for i, field := range fields {
-				w.WriteString(field)
-				if i < len(fields)-1 {
-					w.WriteString(", ")
-				}
-			}
-			w.WriteString(")\n")*/
 		w.WriteString("\"" + syscallName + "\": {\n")
 		for _, field := range fields {
 			w.WriteString("    \"" + field + "\",\n")
