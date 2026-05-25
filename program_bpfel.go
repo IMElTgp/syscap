@@ -25,6 +25,7 @@ type programEnterState struct {
 	CgroupId  uint64
 	Comm      [16]int8
 	Args      [6]uint64
+	DerefArgs [6]uint64
 }
 
 // loadProgram returns the embedded CollectionSpec for program.
@@ -86,6 +87,7 @@ type programMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type programVariableSpecs struct {
+	SyscallPtrArgs *ebpf.VariableSpec `ebpf:"syscall_ptr_args"`
 }
 
 // programObjects contains all objects after they have been loaded into the kernel.
@@ -125,6 +127,7 @@ func (m *programMaps) Close() error {
 //
 // It can be passed to loadProgramObjects or ebpf.CollectionSpec.LoadAndAssign.
 type programVariables struct {
+	SyscallPtrArgs *ebpf.Variable `ebpf:"syscall_ptr_args"`
 }
 
 // programPrograms contains all programs after they have been loaded into the kernel.

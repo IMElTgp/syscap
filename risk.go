@@ -64,9 +64,10 @@ func (r RiskLevel) MarshalJSON() ([]byte, error) {
 type Risk struct {
 	RiskLevel RiskLevel `json:"risk_level"`
 	// "sensitive", "arg_sensitive", "failing_too_much", "delay_too_high", "abnormal_ret_val"
-	RiskCategory   string `json:"risk_category"`
-	RelatedSyscall string `json:"related_syscall"`
-	Evidence       string `json:"evidence"`
+	RiskCategory   string                  `json:"risk_category"`
+	RelatedSyscall string                  `json:"related_syscall"`
+	Evidence       string                  `json:"evidence"`
+	Snapshot       MetadataForRiskAnalysis `json:"snapshot"`
 }
 
 type RiskCollector struct {
@@ -117,6 +118,7 @@ func (r *RiskCollector) generateFindingForSensitiveSyscall(syscallName string) {
 		RiskCategory:   "sensitive",
 		RelatedSyscall: syscallName,
 		Evidence:       fmt.Sprintf("syscall %s is sensitive in normal containers", syscallName),
+		Snapshot:       getInfoFromSyscallName(syscallName),
 	})
 }
 
@@ -125,7 +127,8 @@ func getInfoFromSyscallName(syscallName string) MetadataForRiskAnalysis {
 }
 
 func checkSensitiveArg(syscallName string, sensitiveCond ...SensitiveArgRule) (risks []Risk) {
-	for _, r := range getInfoFromSyscallName(syscallName).Running {
+	metadata := getInfoFromSyscallName(syscallName)
+	for _, r := range metadata.Running {
 		args := r.Arguments
 		for _, cond := range sensitiveCond {
 			if cond.Pattern.MatchString(args) {
@@ -151,6 +154,7 @@ func checkSensitiveArg(syscallName string, sensitiveCond ...SensitiveArgRule) (r
 						cond.Reason,
 						args,
 					),
+					Snapshot: metadata,
 				})
 			}
 		}
@@ -299,6 +303,7 @@ func (r *RiskCollector) generateFindingForSyscallsFailingTooMuch(syscallName str
 		RiskCategory:   "failing_too_much",
 		RelatedSyscall: syscallName,
 		Evidence:       fmt.Sprintf("Totally count: %d, failing count: %d", getInfoFromSyscallName(syscallName).Result.CalledCount, getInfoFromSyscallName(syscallName).Result.FailedCount),
+		Snapshot:       getInfoFromSyscallName(syscallName),
 	})
 }
 
@@ -341,6 +346,9 @@ var delayCriticalSyscalls = map[string]struct{}{
 }
 
 func highDelaySyscallRiskRating(syscallName string) RiskLevel {
+	if !checkP50DelayTooLong(syscallName) {
+		return None
+	}
 	if !checkP99DelayTooLong(syscallName) {
 		return None
 	}
@@ -361,6 +369,7 @@ func (r *RiskCollector) generateFindingForHighDelaySyscalls(syscallName string) 
 		RiskCategory:   "delay_too_high",
 		RelatedSyscall: syscallName,
 		Evidence:       fmt.Sprintf("P50Delay=%d, P99Delay=%d", getInfoFromSyscallName(syscallName).Result.P50Delay, getInfoFromSyscallName(syscallName).Result.P99Delay),
+		Snapshot:       getInfoFromSyscallName(syscallName),
 	})
 }
 
@@ -450,12 +459,12 @@ func (r *RiskCollector) checkAbnormalRetVal(syscallName string) {
 			RiskCategory:   "abnormal_ret_val",
 			RelatedSyscall: syscallName,
 			Evidence:       evidence,
+			Snapshot:       getInfoFromSyscallName(syscallName),
 		})
 	}
 }
 
 func generateOverallFinding(syscallName string) []Risk {
-	// TODO
 	r := &RiskCollector{
 		Risks: make([]Risk, 0),
 	}

@@ -18,6 +18,11 @@ type namedValue struct {
 	Value uint64
 }
 
+type argumentDecl struct {
+	Type string
+	Name string
+}
+
 // FormatParsedArguments formats one syscall's raw args into a human-readable
 // text form such as "family=AF_NETLINK, type=SOCK_RAW".
 //
@@ -31,8 +36,12 @@ func FormatParsedArguments(syscallName string, rawArgs [6]uint64) string {
 
 	parts := make([]string, 0, len(fields))
 	for idx, fieldDecl := range fields {
-		argName := argumentName(fieldDecl)
-		parts = append(parts, fmt.Sprintf("%s=%s", argName, ParseArgumentValue(syscallName, idx, rawArgs[idx])))
+		decl := parseArgumentDecl(fieldDecl)
+		if decl.Type == "" {
+			parts = append(parts, fmt.Sprintf("%s=%s", decl.Name, ParseArgumentValue(syscallName, idx, rawArgs[idx])))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s %s=%s", decl.Type, decl.Name, ParseArgumentValue(syscallName, idx, rawArgs[idx])))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -106,11 +115,35 @@ func parseArgumentValueByField(syscallName, fieldName string, raw uint64) string
 }
 
 func argumentName(fieldDecl string) string {
+	return parseArgumentDecl(fieldDecl).Name
+}
+
+func parseArgumentDecl(fieldDecl string) argumentDecl {
 	parts := strings.Fields(fieldDecl)
 	if len(parts) == 0 {
-		return fieldDecl
+		return argumentDecl{}
 	}
-	return strings.TrimLeft(parts[len(parts)-1], "*")
+
+	rawName := parts[len(parts)-1]
+	name := strings.TrimLeft(rawName, "*")
+	ptrPrefix := rawName[:len(rawName)-len(name)]
+	if len(parts) == 1 {
+		return argumentDecl{
+			Type: strings.TrimSpace(ptrPrefix),
+			Name: name,
+		}
+	}
+
+	typePart := strings.Join(parts[:len(parts)-1], " ")
+	typePart += ptrPrefix
+	typePart = strings.ReplaceAll(typePart, " *", "*")
+	typePart = strings.ReplaceAll(typePart, "*", " *")
+	typePart = strings.Join(strings.Fields(typePart), " ")
+
+	return argumentDecl{
+		Type: typePart,
+		Name: name,
+	}
 }
 
 func decodeExact(raw uint64, table map[uint64]string) string {

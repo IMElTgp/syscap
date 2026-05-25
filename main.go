@@ -20,12 +20,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IMElTgp/syscap/internal"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
+
+var syscallTable = internal.SyscallTable
+var syscallFields = internal.SyscallFields
+var reversedSyscallTable = internal.ReversedSyscallTable
 
 func main() {
 	fmt.Println("hello, syscap")
@@ -34,11 +39,6 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
-}
-
-func init() {
-	// init syscallTable
-	initTable()
 }
 
 // --container-id and --target-syscall flags
@@ -57,15 +57,16 @@ type StatisticalRes struct {
 }
 
 type RunningLogMetadata struct {
-	Pid         uint32        `json:"pid"`
-	Uid         uint32        `json:"uid"`
-	Tid         uint32        `json:"tid"`
-	Ppid        uint32        `json:"parent_pid"`
-	SyscallName string        `json:"syscall_name"`
-	Duration    time.Duration `json:"time_duration"`
-	ReturnValue int64         `json:"return_val"`
-	Comm        string        `json:"command"`
-	Arguments   string        `json:"args"`
+	Pid            uint32        `json:"pid"`
+	Uid            uint32        `json:"uid"`
+	Tid            uint32        `json:"tid"`
+	Ppid           uint32        `json:"parent_pid"`
+	SyscallName    string        `json:"syscall_name"`
+	Duration       time.Duration `json:"time_duration"`
+	ReturnValue    int64         `json:"return_val"`
+	Comm           string        `json:"command"`
+	Arguments      string        `json:"args"`
+	DerefArguments string        `json:"deref_args"`
 }
 
 type MetadataForRiskAnalysis struct {
@@ -164,6 +165,8 @@ func splitSupportedSyscallFilter(targetSyscalls string) (syscalls map[string]str
 	return
 }
 
+// checkIfExistInMap just checks if one element exists in a map of type `map[string]struct{}` without having to
+// deal with the first return value (just an empty struct{}{})
 func checkIfExistInMap(m map[string]struct{}, elem string) bool {
 	_, ok := m[elem]
 	return ok
@@ -182,17 +185,30 @@ func formatArgumentText(event Event) (format string) {
 	return FormatParsedArguments(syscallTable[int(event.SyscallID)], event.Args)
 }
 
+func formatDerefArgumentText(event Event) (format string) {
+	// return FormatParsedArguments(syscallTable[int(event.SyscallID)], event.DerefArgs)
+	args := []string{}
+	for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
+		if event.DerefArgs[idx] == 0 {
+			continue
+		}
+		args = append(args, fmt.Sprintf("%s=%d", arg, event.DerefArgs[idx]))
+	}
+	return strings.Join(args, ", ")
+}
+
 func recordLogMetadata(event Event, datas []RunningLogMetadata) []RunningLogMetadata {
 	datas = append(datas, RunningLogMetadata{
-		Pid:         event.Pid,
-		Tid:         event.Tid,
-		Uid:         event.Uid,
-		Ppid:        event.Ppid,
-		SyscallName: syscallTable[int(event.SyscallID)],
-		Duration:    time.Duration(event.TimeStampExit - event.TimeStampEnter),
-		ReturnValue: event.Ret,
-		Comm:        unix.ByteSliceToString(event.Comm[:]),
-		Arguments:   formatArgumentText(event),
+		Pid:            event.Pid,
+		Tid:            event.Tid,
+		Uid:            event.Uid,
+		Ppid:           event.Ppid,
+		SyscallName:    syscallTable[int(event.SyscallID)],
+		Duration:       time.Duration(event.TimeStampExit - event.TimeStampEnter),
+		ReturnValue:    event.Ret,
+		Comm:           unix.ByteSliceToString(event.Comm[:]),
+		Arguments:      formatArgumentText(event),
+		DerefArguments: formatDerefArgumentText(event),
 	})
 
 	return datas
@@ -239,9 +255,31 @@ func run() error {
 		return fmt.Errorf("failed to remove mem lock: %w", err)
 	}
 
-	obj := programObjects{}
-	if err := loadProgramObjects(&obj, nil); err != nil {
-		return fmt.Errorf("failed to load object: %w", err)
+	/*
+		obj := programObjects{}
+		if err := loadProgramObjects(&obj, nil); err != nil {
+			return fmt.Errorf("failed to load object: %w", err)
+		}
+		defer obj.Close()*/
+	spec, err := loadProgram()
+	if err != nil {
+		return err
+	}
+
+	var specs programSpecs
+	if err := spec.Assign(&specs); err != nil {
+		return err
+	}
+
+	ptrArgs := fillPtrArgs()
+
+	if err := specs.SyscallPtrArgs.Set(ptrArgs); err != nil {
+		return err
+	}
+
+	var obj programObjects
+	if err := spec.LoadAndAssign(&obj, nil); err != nil {
+		return err
 	}
 	defer obj.Close()
 
@@ -325,6 +363,7 @@ func run() error {
 		writeFindingToJSONFile(findingFile, findings)
 		fmt.Println()
 		fmt.Println("You may see detailed information about each syscall event caught in ./running.log or ./running.json and the final performance analysis in ./performance.log.")
+		fmt.Println("For light-weight security findings, see ./finding.json.")
 	}()
 
 	for {
@@ -359,7 +398,15 @@ func run() error {
 				fmt.Fprintf(recordFile, ", ")
 			}
 		}
-		fmt.Fprintln(recordFile, ")")
+		fmt.Fprintln(recordFile, ") ")
+		fmt.Fprintf(recordFile, "deref_args=(")
+		for idx, arg := range syscallFields[syscallTable[int(event.SyscallID)]] {
+			fmt.Fprintf(recordFile, "%s=%d", arg, event.DerefArgs[idx])
+			if idx < len(syscallFields[syscallTable[int(event.SyscallID)]])-1 {
+				fmt.Fprintf(recordFile, ", ")
+			}
+		}
+		fmt.Fprintln(recordFile, ") ")
 		fmt.Printf("\rRaw syscall events caught: %d", eventsCaught)
 		datas = recordLogMetadata(event, datas)
 		appendRunningMetadataToOverallInfo(event)

@@ -1,0 +1,781 @@
+#include "vmlinux.h"
+
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_endian.h>
+#include <bpf/bpf_tracing.h>
+
+#define __SYS_VSERVER 236
+#define __SYS_IOPRIO_GET 252
+#define __SYS_SYMLINKAT 266
+#define __SYS_MLOCK2 325
+#define __SYS_FSCONFIG 431
+#define __SYS_MAP_SHADOW_STACK 453
+#define __SYS_SENDFILE 40
+#define __SYS_SWAPOFF 168
+#define __SYS_GET_THREAD_AREA 211
+#define __SYS_TIMER_SETTIME 223
+#define __SYS_COPY_FILE_RANGE 326
+#define __SYS_GETPGID 121
+#define __SYS_TGKILL 234
+#define __SYS_STATMOUNT 457
+#define __SYS_REMOVEXATTRAT 466
+#define __SYS_PWRITE64 18
+#define __SYS_ARCH_PRCTL 158
+#define __SYS_NFSSERVCTL 180
+#define __SYS_CLOCK_SETTIME 227
+#define __SYS_UTIMES 235
+#define __SYS_WAITID 247
+#define __SYS_ACCEPT4 288
+#define __SYS_LANDLOCK_ADD_RULE 445
+#define __SYS_SWAPON 167
+#define __SYS_TIMER_CREATE 222
+#define __SYS_TIMERFD_GETTIME 287
+#define __SYS_SYNCFS 306
+#define __SYS_SECCOMP 317
+#define __SYS_LISTMOUNT 458
+#define __SYS_LISTNS 470
+#define __SYS_BRK 12
+#define __SYS_SHUTDOWN 48
+#define __SYS_GETEGID 108
+#define __SYS_RT_SIGTIMEDWAIT 128
+#define __SYS_QUERY_MODULE 178
+#define __SYS_MQ_TIMEDRECEIVE 243
+#define __SYS_PIDFD_GETFD 438
+#define __SYS_CLONE 56
+#define __SYS_GETRLIMIT 97
+#define __SYS_GETRUSAGE 98
+#define __SYS_TIMES 100
+#define __SYS_CLOCK_GETTIME 228
+#define __SYS_SPLICE 275
+#define __SYS_PKEY_ALLOC 330
+#define __SYS_FILE_SETATTR 469
+#define __SYS_ACCESS 21
+#define __SYS_UNLINK 87
+#define __SYS_SCHED_RR_GET_INTERVAL 148
+#define __SYS_GETTID 186
+#define __SYS_SETXATTR 188
+#define __SYS_PRLIMIT64 302
+#define __SYS_NANOSLEEP 35
+#define __SYS_LCHOWN 94
+#define __SYS_EPOLL_CTL_OLD 214
+#define __SYS_PPOLL 271
+#define __SYS_OPEN_BY_HANDLE_AT 304
+#define __SYS_SHMCTL 31
+#define __SYS_IO_SUBMIT 209
+#define __SYS_MBIND 237
+#define __SYS_SIGNALFD4 289
+#define __SYS_OPENAT 257
+#define __SYS_SET_ROBUST_LIST 273
+#define __SYS_TEE 276
+#define __SYS_MSGRCV 70
+#define __SYS_GETPPID 110
+#define __SYS_GETPGRP 111
+#define __SYS_SCHED_SETAFFINITY 203
+#define __SYS_EPOLL_WAIT_OLD 215
+#define __SYS_PROCESS_MADVISE 440
+#define __SYS_MOUNT_SETATTR 442
+#define __SYS_MSGSND 69
+#define __SYS_FLOCK 73
+#define __SYS_REBOOT 169
+#define __SYS_IOPL 172
+#define __SYS_CREATE_MODULE 174
+#define __SYS_FREMOVEXATTR 199
+#define __SYS_EXIT_GROUP 231
+#define __SYS_SIGNALFD 282
+#define __SYS_CONNECT 42
+#define __SYS_GETSOCKOPT 55
+#define __SYS_SYSLOG 103
+#define __SYS_FSTATFS 138
+#define __SYS_FSETXATTR 190
+#define __SYS_LREMOVEXATTR 198
+#define __SYS_GETRANDOM 318
+#define __SYS_MOVE_MOUNT 429
+#define __SYS_LSEEK 8
+#define __SYS_AFS_SYSCALL 183
+#define __SYS_MQ_GETSETATTR 245
+#define __SYS_OPENAT2 437
+#define __SYS_MEMFD_SECRET 447
+#define __SYS_SEMOP 65
+#define __SYS_PROCESS_VM_WRITEV 311
+#define __SYS_IO_URING_REGISTER 427
+#define __SYS_OPEN_TREE_ATTR 467
+#define __SYS_SENDTO 44
+#define __SYS_GETDENTS 78
+#define __SYS_SETTIMEOFDAY 164
+#define __SYS_GETCPU 309
+#define __SYS_MSEAL 462
+#define __SYS_MPROTECT 10
+#define __SYS_SCHED_YIELD 24
+#define __SYS_ACCEPT 43
+#define __SYS_SIGALTSTACK 131
+#define __SYS_SETRLIMIT 160
+#define __SYS_IOPERM 173
+#define __SYS_LGETXATTR 192
+#define __SYS_REMOVEXATTR 197
+#define __SYS_SETFSGID 123
+#define __SYS_MQ_OPEN 240
+#define __SYS_UNSHARE 272
+#define __SYS_INOTIFY_INIT1 294
+#define __SYS_MEMFD_CREATE 319
+#define __SYS_FUTEX_WAIT 455
+#define __SYS_MUNMAP 11
+#define __SYS_UTIME 132
+#define __SYS_PERSONALITY 135
+#define __SYS_TKILL 200
+#define __SYS_FADVISE64 221
+#define __SYS_FACCESSAT 269
+#define __SYS_GET_ROBUST_LIST 274
+#define __SYS_CLOSE_RANGE 436
+#define __SYS_LSTAT 6
+#define __SYS_CHROOT 161
+#define __SYS_ACCT 163
+#define __SYS_SETDOMAINNAME 171
+#define __SYS_PROCESS_MRELEASE 448
+#define __SYS_SET_THREAD_AREA 205
+#define __SYS_IO_DESTROY 207
+#define __SYS_SET_MEMPOLICY 238
+#define __SYS_MKNODAT 259
+#define __SYS_RECVMMSG 299
+#define __SYS_KCMP 312
+#define __SYS_GETXATTRAT 464
+#define __SYS_IO_GETEVENTS 208
+#define __SYS_FUTEX_WAITV 449
+#define __SYS_POLL 7
+#define __SYS_RT_SIGACTION 13
+#define __SYS_FCNTL 72
+#define __SYS_GETTIMEOFDAY 96
+#define __SYS_GETSID 124
+#define __SYS_RT_SIGQUEUEINFO 129
+#define __SYS_UMOUNT2 166
+#define __SYS_FGETXATTR 193
+#define __SYS_IOCTL 16
+#define __SYS_DUP2 33
+#define __SYS_USELIB 134
+#define __SYS_IO_URING_ENTER 426
+#define __SYS_EPOLL_PWAIT2 441
+#define __SYS_LANDLOCK_CREATE_RULESET 444
+#define __SYS_MINCORE 27
+#define __SYS_SYMLINK 88
+#define __SYS_INIT_MODULE 175
+#define __SYS_SCHED_GETATTR 315
+#define __SYS_SELECT 23
+#define __SYS_LLISTXATTR 195
+#define __SYS_EPOLL_WAIT 232
+#define __SYS_ADD_KEY 248
+#define __SYS_KEYCTL 250
+#define __SYS_SCHED_SETATTR 314
+#define __SYS_SENDMSG 46
+#define __SYS_RECVMSG 47
+#define __SYS_LSETXATTR 189
+#define __SYS_TIME 201
+#define __SYS_LSM_LIST_MODULES 461
+#define __SYS_BIND 49
+#define __SYS_SETUID 105
+#define __SYS_EPOLL_PWAIT 281
+#define __SYS_DUP3 292
+#define __SYS_READ 0
+#define __SYS_FORK 57
+#define __SYS_RENAME 82
+#define __SYS_FCHMODAT 268
+#define __SYS_SETXATTRAT 463
+#define __SYS_RT_SIGPROCMASK 14
+#define __SYS_PERF_EVENT_OPEN 298
+#define __SYS_READV 19
+#define __SYS_FCHOWN 93
+#define __SYS_GETUID 102
+#define __SYS_MLOCKALL 151
+#define __SYS_GET_KERNEL_SYMS 177
+#define __SYS_GETXATTR 191
+#define __SYS_EPOLL_CREATE 213
+#define __SYS_CLOCK_GETRES 229
+#define __SYS_PREAD64 17
+#define __SYS_GETGID 104
+#define __SYS_RT_SIGSUSPEND 130
+#define __SYS_LOOKUP_DCOOKIE 212
+#define __SYS_KEXEC_LOAD 246
+#define __SYS_NEWFSTATAT 262
+#define __SYS_SYNC_FILE_RANGE 277
+#define __SYS_LANDLOCK_RESTRICT_SELF 446
+#define __SYS_UNAME 63
+#define __SYS_SETSID 112
+#define __SYS_CAPSET 126
+#define __SYS_STATFS 137
+#define __SYS_MODIFY_LDT 154
+#define __SYS_READAHEAD 187
+#define __SYS_EVENTFD2 290
+#define __SYS_LISTXATTRAT 465
+#define __SYS_SHMDT 67
+#define __SYS_UMASK 95
+#define __SYS_REQUEST_KEY 249
+#define __SYS_PREADV2 327
+#define __SYS_CACHESTAT 451
+#define __SYS_FUTEX_WAKE 454
+#define __SYS_RSEQ_SLICE_YIELD 471
+#define __SYS_CREAT 85
+#define __SYS_SETGID 106
+#define __SYS_PUTPMSG 182
+#define __SYS_LINKAT 265
+#define __SYS_MSGCTL 71
+#define __SYS_RT_SIGPENDING 127
+#define __SYS_QUOTACTL 179
+#define __SYS_LISTXATTR 194
+#define __SYS_IO_CANCEL 210
+#define __SYS_NAME_TO_HANDLE_AT 303
+#define __SYS_FINIT_MODULE 313
+#define __SYS_OPEN 2
+#define __SYS_SOCKETPAIR 53
+#define __SYS_SEMGET 64
+#define __SYS_SCHED_GETPARAM 143
+#define __SYS_SECURITY 185
+#define __SYS_VMSPLICE 278
+#define __SYS_PIPE2 293
+#define __SYS_MEMBARRIER 324
+#define __SYS_SETREGID 114
+#define __SYS_GETPRIORITY 140
+#define __SYS_SCHED_SETPARAM 142
+#define __SYS_MIGRATE_PAGES 256
+#define __SYS_BPF 321
+#define __SYS_FSMOUNT 432
+#define __SYS_IO_SETUP 206
+#define __SYS_INOTIFY_ADD_WATCH 254
+#define __SYS_IO_URING_SETUP 425
+#define __SYS_SYSFS 139
+#define __SYS_SCHED_GETAFFINITY 204
+#define __SYS_GETDENTS64 217
+#define __SYS_URETPROBE 335
+#define __SYS_FSTAT 5
+#define __SYS_GETSOCKNAME 51
+#define __SYS_MUNLOCK 150
+#define __SYS_RESTART_SYSCALL 219
+#define __SYS_CLOCK_NANOSLEEP 230
+#define __SYS_PREADV 295
+#define __SYS_IO_PGETEVENTS 333
+#define __SYS_FSYNC 74
+#define __SYS_GETRESUID 118
+#define __SYS_SETRESGID 119
+#define __SYS_SCHED_SETSCHEDULER 144
+#define __SYS_MLOCK 149
+#define __SYS_SENDMMSG 307
+#define __SYS_PWRITEV2 328
+#define __SYS__SYSCTL 156
+#define __SYS_FALLOCATE 285
+#define __SYS_OPEN_TREE 428
+#define __SYS_LSM_GET_SELF_ATTR 459
+#define __SYS_DUP 32
+#define __SYS_GETITIMER 36
+#define __SYS_LISTEN 50
+#define __SYS_SYNC 162
+#define __SYS_TIMER_DELETE 226
+#define __SYS_RENAMEAT 264
+#define __SYS_SETRESUID 117
+#define __SYS_PRCTL 157
+#define __SYS_FLISTXATTR 196
+#define __SYS_FANOTIFY_INIT 300
+#define __SYS_EXECVEAT 322
+#define __SYS_RSEQ 334
+#define __SYS_SHMGET 29
+#define __SYS_PTRACE 101
+#define __SYS_SETPGID 109
+#define __SYS_GET_MEMPOLICY 239
+#define __SYS_MQ_TIMEDSEND 242
+#define __SYS_WRITE 1
+#define __SYS_RT_SIGRETURN 15
+#define __SYS_GETEUID 107
+#define __SYS_SETPRIORITY 141
+#define __SYS_MUNLOCKALL 152
+#define __SYS_MKDIRAT 258
+#define __SYS_MOVE_PAGES 279
+#define __SYS_FSPICK 433
+#define __SYS_CHMOD 90
+#define __SYS_SCHED_GET_PRIORITY_MAX 146
+#define __SYS_RT_TGSIGQUEUEINFO 297
+#define __SYS_KEXEC_FILE_LOAD 320
+#define __SYS_USERFAULTFD 323
+#define __SYS_UPROBE 336
+#define __SYS_CLONE3 435
+#define __SYS_FUTEX_REQUEUE 456
+#define __SYS_CLOSE 3
+#define __SYS_WRITEV 20
+#define __SYS_EXECVE 59
+#define __SYS_SEMCTL 66
+#define __SYS_FDATASYNC 75
+#define __SYS_GETCWD 79
+#define __SYS_RMDIR 84
+#define __SYS_SETFSUID 122
+#define __SYS_MSYNC 26
+#define __SYS_SETGROUPS 116
+#define __SYS_MKNOD 133
+#define __SYS_SCHED_GET_PRIORITY_MIN 147
+#define __SYS_REMAP_FILE_PAGES 216
+#define __SYS_MQ_UNLINK 241
+#define __SYS_UTIMENSAT 280
+#define __SYS_PWRITEV 296
+#define __SYS_PIPE 22
+#define __SYS_SHMAT 30
+#define __SYS_ALARM 37
+#define __SYS_SETSOCKOPT 54
+#define __SYS_SEMTIMEDOP 220
+#define __SYS_PKEY_FREE 331
+#define __SYS_FCHMODAT2 452
+#define __SYS_LSM_SET_SELF_ATTR 460
+#define __SYS_GETRESGID 120
+#define __SYS_SCHED_GETSCHEDULER 145
+#define __SYS_TUXCALL 184
+#define __SYS_FUTIMESAT 261
+#define __SYS_CLOCK_ADJTIME 305
+#define __SYS_SETITIMER 38
+#define __SYS_SOCKET 41
+#define __SYS_LINK 86
+#define __SYS_DELETE_MODULE 176
+#define __SYS_TIMER_GETOVERRUN 225
+#define __SYS_EPOLL_CREATE1 291
+#define __SYS_PIDFD_OPEN 434
+#define __SYS_MMAP 9
+#define __SYS_VFORK 58
+#define __SYS_EXIT 60
+#define __SYS_FTRUNCATE 77
+#define __SYS_SYSINFO 99
+#define __SYS_CAPGET 125
+#define __SYS_MOUNT 165
+#define __SYS_UNLINKAT 263
+#define __SYS_READLINK 89
+#define __SYS_GETGROUPS 115
+#define __SYS_PIVOT_ROOT 155
+#define __SYS_GETPMSG 181
+#define __SYS_IOPRIO_SET 251
+#define __SYS_INOTIFY_RM_WATCH 255
+#define __SYS_RENAMEAT2 316
+#define __SYS_FSOPEN 430
+#define __SYS_RECVFROM 45
+#define __SYS_SET_TID_ADDRESS 218
+#define __SYS_TIMERFD_CREATE 283
+#define __SYS_PROCESS_VM_READV 310
+#define __SYS_PKEY_MPROTECT 329
+#define __SYS_STATX 332
+#define __SYS_PIDFD_SEND_SIGNAL 424
+#define __SYS_FACCESSAT2 439
+#define __SYS_MREMAP 25
+#define __SYS_MADVISE 28
+#define __SYS_GETPEERNAME 52
+#define __SYS_MKDIR 83
+#define __SYS_CHOWN 92
+#define __SYS_SETREUID 113
+#define __SYS_MQ_NOTIFY 244
+#define __SYS_SETNS 308
+#define __SYS_PAUSE 34
+#define __SYS_GETPID 39
+#define __SYS_FCHDIR 81
+#define __SYS_FCHMOD 91
+#define __SYS_VHANGUP 153
+#define __SYS_ADJTIMEX 159
+#define __SYS_TRUNCATE 76
+#define __SYS_INOTIFY_INIT 253
+#define __SYS_READLINKAT 267
+#define __SYS_PSELECT6 270
+#define __SYS_FILE_GETATTR 468
+#define __SYS_STAT 4
+#define __SYS_WAIT4 61
+#define __SYS_KILL 62
+#define __SYS_MSGGET 68
+#define __SYS_CHDIR 80
+#define __SYS_USTAT 136
+#define __SYS_SETHOSTNAME 170
+#define __SYS_TIMER_GETTIME 224
+#define __SYS_FCHOWNAT 260
+#define __SYS_EVENTFD 284
+#define __SYS_TIMERFD_SETTIME 286
+#define __SYS_FANOTIFY_MARK 301
+#define __SYS_QUOTACTL_FD 443
+#define __SYS_SET_MEMPOLICY_HOME_NODE 450
+#define __SYS_FUTEX 202
+#define __SYS_EPOLL_CTL 233
+
+const volatile __u8 syscall_ptr_args[] = {
+    [__SYS_SYNC_FILE_RANGE] = 0,
+    [__SYS_SETSOCKOPT] = 8,
+    [__SYS_MODIFY_LDT] = 2,
+    [__SYS_UMOUNT2] = 0,
+    [__SYS_INOTIFY_RM_WATCH] = 0,
+    [__SYS_SIGNALFD4] = 2,
+    [__SYS_PREADV] = 2,
+    [__SYS_RSEQ] = 1,
+    [__SYS_SET_MEMPOLICY_HOME_NODE] = 0,
+    [__SYS_FSTAT] = 0,
+    [__SYS_TIMER_GETTIME] = 2,
+    [__SYS_RECVMMSG] = 18,
+    [__SYS_LANDLOCK_CREATE_RULESET] = 1,
+    [__SYS_FUTEX_WAITV] = 9,
+    [__SYS_FUTEX_REQUEUE] = 1,
+    [__SYS_STATMOUNT] = 3,
+    [__SYS_READ] = 2,
+    [__SYS_EXIT] = 0,
+    [__SYS_GET_KERNEL_SYMS] = 0,
+    [__SYS_SCHED_GETAFFINITY] = 4,
+    [__SYS_SIGNALFD] = 2,
+    [__SYS_EVENTFD2] = 0,
+    [__SYS_MEMFD_CREATE] = 1,
+    [__SYS_LSM_GET_SELF_ATTR] = 6,
+    [__SYS_PIPE] = 1,
+    [__SYS_RECVMSG] = 2,
+    [__SYS_CHDIR] = 1,
+    [__SYS_REMAP_FILE_PAGES] = 0,
+    [__SYS_MQ_UNLINK] = 1,
+    [__SYS_EPOLL_CREATE1] = 0,
+    [__SYS_KCMP] = 0,
+    [__SYS_PKEY_MPROTECT] = 0,
+    [__SYS_READLINK] = 3,
+    [__SYS_RT_SIGTIMEDWAIT] = 7,
+    [__SYS_SCHED_SETPARAM] = 2,
+    [__SYS_ACCEPT4] = 6,
+    [__SYS_SENDMMSG] = 2,
+    [__SYS_PREADV2] = 2,
+    [__SYS_PIDFD_GETFD] = 0,
+    [__SYS_LISTXATTRAT] = 10,
+    [__SYS_SENDMSG] = 2,
+    [__SYS_MSGCTL] = 4,
+    [__SYS_CAPSET] = 0,
+    [__SYS_RESTART_SYSCALL] = 0,
+    [__SYS_PROCESS_VM_READV] = 10,
+    [__SYS_MADVISE] = 0,
+    [__SYS_GETRLIMIT] = 2,
+    [__SYS_MUNLOCK] = 0,
+    [__SYS_FSETXATTR] = 6,
+    [__SYS_CLOCK_SETTIME] = 2,
+    [__SYS_MOUNT_SETATTR] = 10,
+    [__SYS_MEMFD_SECRET] = 0,
+    [__SYS_MUNMAP] = 0,
+    [__SYS_GETGID] = 0,
+    [__SYS_INIT_MODULE] = 5,
+    [__SYS_UTIMES] = 3,
+    [__SYS_RENAMEAT2] = 10,
+    [__SYS_LSEEK] = 0,
+    [__SYS_BRK] = 0,
+    [__SYS_NANOSLEEP] = 3,
+    [__SYS_CLONE] = 12,
+    [__SYS_GETPPID] = 0,
+    [__SYS_SETXATTR] = 7,
+    [__SYS_PKEY_ALLOC] = 0,
+    [__SYS_FACCESSAT2] = 2,
+    [__SYS_SENDTO] = 18,
+    [__SYS_FLOCK] = 0,
+    [__SYS_IOPERM] = 0,
+    [__SYS_VMSPLICE] = 2,
+    [__SYS_FUTEX_WAKE] = 1,
+    [__SYS_REMOVEXATTRAT] = 10,
+    [__SYS_RECVFROM] = 50,
+    [__SYS_CREAT] = 1,
+    [__SYS_MKNOD] = 1,
+    [__SYS_OPENAT] = 2,
+    [__SYS_READLINKAT] = 6,
+    [__SYS_MLOCK2] = 0,
+    [__SYS_FSCONFIG] = 0,
+    [__SYS_STAT] = 0,
+    [__SYS_UNLINK] = 1,
+    [__SYS_SETREUID] = 0,
+    [__SYS_LLISTXATTR] = 3,
+    [__SYS_FUTEX] = 25,
+    [__SYS_IO_DESTROY] = 0,
+    [__SYS_FCHOWNAT] = 2,
+    [__SYS_SYMLINKAT] = 5,
+    [__SYS_RT_SIGPROCMASK] = 6,
+    [__SYS_GETPID] = 0,
+    [__SYS_EXECVE] = 7,
+    [__SYS_GETRESUID] = 7,
+    [__SYS_RT_SIGPENDING] = 1,
+    [__SYS_SWAPON] = 1,
+    [__SYS_MEMBARRIER] = 0,
+    [__SYS_FSOPEN] = 0,
+    [__SYS_MPROTECT] = 0,
+    [__SYS_GETSOCKNAME] = 6,
+    [__SYS_GETGROUPS] = 2,
+    [__SYS_EPOLL_PWAIT] = 18,
+    [__SYS_EXECVEAT] = 14,
+    [__SYS_LISTNS] = 3,
+    [__SYS_TIMES] = 1,
+    [__SYS_SETUID] = 0,
+    [__SYS_SIGALTSTACK] = 3,
+    [__SYS_IO_SETUP] = 2,
+    [__SYS_PWRITEV2] = 2,
+    [__SYS_CREATE_MODULE] = 0,
+    [__SYS_FANOTIFY_MARK] = 16,
+    [__SYS_PROCESS_MRELEASE] = 0,
+    [__SYS_MSYNC] = 0,
+    [__SYS_SHUTDOWN] = 0,
+    [__SYS_LISTEN] = 0,
+    [__SYS_SYMLINK] = 3,
+    [__SYS_ACCT] = 1,
+    [__SYS_DELETE_MODULE] = 1,
+    [__SYS_IOPRIO_SET] = 0,
+    [__SYS_LINKAT] = 10,
+    [__SYS_GETSID] = 0,
+    [__SYS_RT_SIGSUSPEND] = 1,
+    [__SYS_TIMER_GETOVERRUN] = 0,
+    [__SYS_VSERVER] = 0,
+    [__SYS_IO_URING_REGISTER] = 4,
+    [__SYS_CLONE3] = 1,
+    [__SYS_FUTEX_WAIT] = 17,
+    [__SYS_LSM_LIST_MODULES] = 3,
+    [__SYS_FTRUNCATE] = 0,
+    [__SYS_SETRESUID] = 0,
+    [__SYS_GETPGID] = 0,
+    [__SYS_LANDLOCK_RESTRICT_SELF] = 0,
+    [__SYS_KILL] = 0,
+    [__SYS_UMASK] = 0,
+    [__SYS_EPOLL_CREATE] = 0,
+    [__SYS_OPEN_BY_HANDLE_AT] = 2,
+    [__SYS_URETPROBE] = 0,
+    [__SYS_MSGGET] = 0,
+    [__SYS_SETREGID] = 0,
+    [__SYS_RT_SIGQUEUEINFO] = 4,
+    [__SYS_SETHOSTNAME] = 1,
+    [__SYS_SECURITY] = 0,
+    [__SYS_PPOLL] = 13,
+    [__SYS_SETXATTRAT] = 26,
+    [__SYS_GETPEERNAME] = 6,
+    [__SYS_SETGID] = 0,
+    [__SYS_SETRESGID] = 0,
+    [__SYS_GETPRIORITY] = 0,
+    [__SYS_ADD_KEY] = 0,
+    [__SYS_INOTIFY_ADD_WATCH] = 2,
+    [__SYS_IO_URING_ENTER] = 16,
+    [__SYS_PTRACE] = 0,
+    [__SYS_PRCTL] = 0,
+    [__SYS_OPEN_TREE] = 2,
+    [__SYS_WRITE] = 2,
+    [__SYS_FADVISE64] = 0,
+    [__SYS_MQ_NOTIFY] = 2,
+    [__SYS_FANOTIFY_INIT] = 0,
+    [__SYS_NAME_TO_HANDLE_AT] = 14,
+    [__SYS_PIDFD_OPEN] = 0,
+    [__SYS_SHMCTL] = 4,
+    [__SYS_SHMDT] = 1,
+    [__SYS_MSGSND] = 2,
+    [__SYS_FCNTL] = 0,
+    [__SYS_GETCWD] = 1,
+    [__SYS_CHMOD] = 1,
+    [__SYS_GETTIMEOFDAY] = 3,
+    [__SYS_FREMOVEXATTR] = 2,
+    [__SYS_CAPGET] = 0,
+    [__SYS_MOVE_PAGES] = 28,
+    [__SYS_UNAME] = 0,
+    [__SYS_FSYNC] = 0,
+    [__SYS__SYSCTL] = 0,
+    [__SYS_SETTIMEOFDAY] = 3,
+    [__SYS_GETTID] = 0,
+    [__SYS_TIMER_CREATE] = 6,
+    [__SYS_TIMERFD_GETTIME] = 2,
+    [__SYS_MMAP] = 0,
+    [__SYS_SEMCTL] = 0,
+    [__SYS_TIME] = 1,
+    [__SYS_WAITID] = 20,
+    [__SYS_ACCESS] = 1,
+    [__SYS_VHANGUP] = 0,
+    [__SYS_ADJTIMEX] = 1,
+    [__SYS_SYNC] = 0,
+    [__SYS_NFSSERVCTL] = 0,
+    [__SYS_SET_TID_ADDRESS] = 1,
+    [__SYS_TGKILL] = 0,
+    [__SYS_PSELECT6] = 62,
+    [__SYS_SOCKET] = 0,
+    [__SYS_USTAT] = 2,
+    [__SYS_GETXATTR] = 7,
+    [__SYS_CLOCK_GETRES] = 2,
+    [__SYS_REQUEST_KEY] = 0,
+    [__SYS_PIDFD_SEND_SIGNAL] = 4,
+    [__SYS_SOCKETPAIR] = 8,
+    [__SYS_RMDIR] = 1,
+    [__SYS_SETFSUID] = 0,
+    [__SYS_SCHED_GET_PRIORITY_MIN] = 0,
+    [__SYS_MLOCKALL] = 0,
+    [__SYS_INOTIFY_INIT] = 0,
+    [__SYS_SETNS] = 0,
+    [__SYS_PKEY_FREE] = 0,
+    [__SYS_SHMGET] = 0,
+    [__SYS_SHMAT] = 2,
+    [__SYS_SETPRIORITY] = 0,
+    [__SYS_IO_CANCEL] = 6,
+    [__SYS_GET_THREAD_AREA] = 0,
+    [__SYS_USERFAULTFD] = 0,
+    [__SYS_STATX] = 18,
+    [__SYS_SETGROUPS] = 2,
+    [__SYS_FSTATFS] = 2,
+    [__SYS_FGETXATTR] = 6,
+    [__SYS_MQ_TIMEDRECEIVE] = 26,
+    [__SYS_FCHMODAT] = 2,
+    [__SYS_BPF] = 2,
+    [__SYS_OPEN_TREE_ATTR] = 10,
+    [__SYS_DUP2] = 0,
+    [__SYS_SETRLIMIT] = 2,
+    [__SYS_TIMER_SETTIME] = 12,
+    [__SYS_SET_ROBUST_LIST] = 1,
+    [__SYS_WAIT4] = 10,
+    [__SYS_SYSLOG] = 2,
+    [__SYS_CLOCK_GETTIME] = 2,
+    [__SYS_SPLICE] = 10,
+    [__SYS_PROCESS_MADVISE] = 2,
+    [__SYS_LANDLOCK_ADD_RULE] = 4,
+    [__SYS_CACHESTAT] = 6,
+    [__SYS_RSEQ_SLICE_YIELD] = 0,
+    [__SYS_RT_SIGRETURN] = 0,
+    [__SYS_LCHOWN] = 1,
+    [__SYS_OPENAT2] = 6,
+    [__SYS_QUOTACTL_FD] = 8,
+    [__SYS_LSETXATTR] = 7,
+    [__SYS_LREMOVEXATTR] = 3,
+    [__SYS_SCHED_SETAFFINITY] = 4,
+    [__SYS_FUTIMESAT] = 6,
+    [__SYS_SYNCFS] = 0,
+    [__SYS_MOVE_MOUNT] = 10,
+    [__SYS_EPOLL_PWAIT2] = 26,
+    [__SYS_MLOCK] = 0,
+    [__SYS_GETRANDOM] = 1,
+    [__SYS_GETEGID] = 0,
+    [__SYS_PERSONALITY] = 0,
+    [__SYS_PUTPMSG] = 0,
+    [__SYS_FALLOCATE] = 0,
+    [__SYS_IOPL] = 0,
+    [__SYS_COPY_FILE_RANGE] = 10,
+    [__SYS_FCHOWN] = 0,
+    [__SYS_SCHED_RR_GET_INTERVAL] = 2,
+    [__SYS_EPOLL_CTL_OLD] = 0,
+    [__SYS_MIGRATE_PAGES] = 12,
+    [__SYS_TIMERFD_SETTIME] = 12,
+    [__SYS_PRLIMIT64] = 12,
+    [__SYS_IO_PGETEVENTS] = 56,
+    [__SYS_MINCORE] = 4,
+    [__SYS_PAUSE] = 0,
+    [__SYS_ACCEPT] = 6,
+    [__SYS_READAHEAD] = 0,
+    [__SYS_MQ_OPEN] = 9,
+    [__SYS_FILE_SETATTR] = 6,
+    [__SYS_REBOOT] = 8,
+    [__SYS_RENAMEAT] = 10,
+    [__SYS_FSMOUNT] = 0,
+    [__SYS_EVENTFD] = 0,
+    [__SYS_PERF_EVENT_OPEN] = 1,
+    [__SYS_LINK] = 3,
+    [__SYS_EPOLL_CTL] = 8,
+    [__SYS_MQ_TIMEDSEND] = 18,
+    [__SYS_UNLINKAT] = 2,
+    [__SYS_VFORK] = 0,
+    [__SYS_FCHMOD] = 0,
+    [__SYS_SYSFS] = 0,
+    [__SYS_SCHED_SETATTR] = 2,
+    [__SYS_SCHED_GETATTR] = 2,
+    [__SYS_UPROBE] = 0,
+    [__SYS_GETUID] = 0,
+    [__SYS_SETSID] = 0,
+    [__SYS_TKILL] = 0,
+    [__SYS_IO_SUBMIT] = 4,
+    [__SYS_EPOLL_WAIT_OLD] = 0,
+    [__SYS_DUP3] = 0,
+    [__SYS_LISTMOUNT] = 3,
+    [__SYS_OPEN] = 1,
+    [__SYS_GETPGRP] = 0,
+    [__SYS_REMOVEXATTR] = 3,
+    [__SYS_IOPRIO_GET] = 0,
+    [__SYS_RT_TGSIGQUEUEINFO] = 8,
+    [__SYS_FINIT_MODULE] = 2,
+    [__SYS_SELECT] = 30,
+    [__SYS_SETITIMER] = 6,
+    [__SYS_SCHED_GETPARAM] = 2,
+    [__SYS_SCHED_SETSCHEDULER] = 4,
+    [__SYS_GETPMSG] = 0,
+    [__SYS_STATFS] = 3,
+    [__SYS_SCHED_GETSCHEDULER] = 0,
+    [__SYS_PIVOT_ROOT] = 3,
+    [__SYS_CLOSE] = 0,
+    [__SYS_SCHED_YIELD] = 0,
+    [__SYS_CHROOT] = 1,
+    [__SYS_MOUNT] = 23,
+    [__SYS_FILE_GETATTR] = 6,
+    [__SYS_PWRITE64] = 2,
+    [__SYS_FCHDIR] = 0,
+    [__SYS_SET_THREAD_AREA] = 0,
+    [__SYS_IO_GETEVENTS] = 24,
+    [__SYS_CLOCK_NANOSLEEP] = 12,
+    [__SYS_EXIT_GROUP] = 0,
+    [__SYS_GET_ROBUST_LIST] = 6,
+    [__SYS_TEE] = 0,
+    [__SYS_DUP] = 0,
+    [__SYS_RENAME] = 3,
+    [__SYS_GETRUSAGE] = 2,
+    [__SYS_UTIME] = 3,
+    [__SYS_TIMER_DELETE] = 0,
+    [__SYS_EPOLL_WAIT] = 2,
+    [__SYS_CLOCK_ADJTIME] = 2,
+    [__SYS_GETCPU] = 7,
+    [__SYS_RT_SIGACTION] = 6,
+    [__SYS_IOCTL] = 0,
+    [__SYS_QUERY_MODULE] = 0,
+    [__SYS_SECCOMP] = 4,
+    [__SYS_TRUNCATE] = 1,
+    [__SYS_SWAPOFF] = 1,
+    [__SYS_KEXEC_FILE_LOAD] = 8,
+    [__SYS_FORK] = 0,
+    [__SYS_GETDENTS] = 2,
+    [__SYS_CHOWN] = 1,
+    [__SYS_SYSINFO] = 1,
+    [__SYS_QUOTACTL] = 10,
+    [__SYS_FACCESSAT] = 2,
+    [__SYS_PROCESS_VM_WRITEV] = 10,
+    [__SYS_IO_URING_SETUP] = 2,
+    [__SYS_ALARM] = 0,
+    [__SYS_SENDFILE] = 0,
+    [__SYS_BIND] = 2,
+    [__SYS_SEMOP] = 2,
+    [__SYS_NEWFSTATAT] = 6,
+    [__SYS_FCHMODAT2] = 2,
+    [__SYS_MAP_SHADOW_STACK] = 0,
+    [__SYS_LSM_SET_SELF_ATTR] = 2,
+    [__SYS_LSTAT] = 0,
+    [__SYS_MKDIR] = 1,
+    [__SYS_PIPE2] = 1,
+    [__SYS_PWRITEV] = 2,
+    [__SYS_MSEAL] = 0,
+    [__SYS_GETXATTRAT] = 26,
+    [__SYS_SCHED_GET_PRIORITY_MAX] = 0,
+    [__SYS_FLISTXATTR] = 2,
+    [__SYS_MKDIRAT] = 2,
+    [__SYS_READV] = 2,
+    [__SYS_GETSOCKOPT] = 24,
+    [__SYS_MUNLOCKALL] = 0,
+    [__SYS_ARCH_PRCTL] = 0,
+    [__SYS_SETDOMAINNAME] = 1,
+    [__SYS_LGETXATTR] = 7,
+    [__SYS_SEMTIMEDOP] = 10,
+    [__SYS_MBIND] = 8,
+    [__SYS_FDATASYNC] = 0,
+    [__SYS_SETPGID] = 0,
+    [__SYS_GETRESGID] = 7,
+    [__SYS_SETFSGID] = 0,
+    [__SYS_LISTXATTR] = 3,
+    [__SYS_MQ_GETSETATTR] = 6,
+    [__SYS_UTIMENSAT] = 6,
+    [__SYS_FSPICK] = 2,
+    [__SYS_POLL] = 1,
+    [__SYS_WRITEV] = 2,
+    [__SYS_GETEUID] = 0,
+    [__SYS_SET_MEMPOLICY] = 2,
+    [__SYS_KEYCTL] = 0,
+    [__SYS_MKNODAT] = 2,
+    [__SYS_UNSHARE] = 0,
+    [__SYS_CLOSE_RANGE] = 0,
+    [__SYS_MREMAP] = 0,
+    [__SYS_GETITIMER] = 2,
+    [__SYS_MSGRCV] = 2,
+    [__SYS_USELIB] = 0,
+    [__SYS_TUXCALL] = 0,
+    [__SYS_KEXEC_LOAD] = 4,
+    [__SYS_TIMERFD_CREATE] = 0,
+    [__SYS_INOTIFY_INIT1] = 0,
+    [__SYS_PREAD64] = 2,
+    [__SYS_CONNECT] = 2,
+    [__SYS_SEMGET] = 0,
+    [__SYS_AFS_SYSCALL] = 0,
+    [__SYS_LOOKUP_DCOOKIE] = 0,
+    [__SYS_GETDENTS64] = 2,
+    [__SYS_GET_MEMPOLICY] = 3,
+};
+
